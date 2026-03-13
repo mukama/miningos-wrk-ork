@@ -189,22 +189,7 @@ class WrkProcAggr extends TetherWrkBase {
   }
 
   async getThingsCount (req) {
-    const stream = this.racks.createReadStream()
-
-    const counts = await async.mapLimit(stream, 25, async data => {
-      const entry = JSON.parse(data.value.toString())
-      try {
-        return await this.net_r0.jRequest(
-          entry.info.rpcPublicKey,
-          'getThingsCount',
-          req, { timeout: 10000 }
-        )
-      } catch (e) {
-        this.debugError(`getThingsCount ${entry.id}`, e, true)
-        return 0
-      }
-    })
-
+    const counts = await this.dataProxy.requestData('getThingsCount', req, { timeout: 10000 })
     return counts.reduce((acc, c) => acc + (c || 0), 0)
   }
 
