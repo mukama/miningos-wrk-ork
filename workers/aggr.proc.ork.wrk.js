@@ -188,6 +188,11 @@ class WrkProcAggr extends TetherWrkBase {
     return collection.sort((a, b) => sortThings(a, b, req.sort))
   }
 
+  async getThingsCount (req) {
+    const counts = await this.dataProxy.requestData('getThingsCount', req, { timeout: 10000 })
+    return counts.reduce((acc, c) => acc + (c || 0), 0)
+  }
+
   async getHistoricalLogs (req) {
     if (!req.logType) {
       throw new Error('ERR_LOG_TYPE_INVALID')
