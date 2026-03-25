@@ -6,11 +6,11 @@ const { ACTION_TYPES } = require('../../workers/lib/constants')
 
 // Mock NetFacility - we'll bypass instanceof checks in tests
 class MockNetFacility {
-  constructor() {
+  constructor () {
     this.jRequestCalls = []
   }
 
-  async jRequest(publicKey, method, params, opts) {
+  async jRequest (publicKey, method, params, opts) {
     this.jRequestCalls.push({ publicKey, method, params, opts })
     return { calls: [], reqVotes: 1 }
   }
@@ -18,18 +18,18 @@ class MockNetFacility {
 
 // Mock Hyperbee - we'll bypass instanceof checks in tests
 class MockHyperbee {
-  constructor(data = {}) {
+  constructor (data = {}) {
     this.data = data
   }
 
-  async get(key) {
+  async get (key) {
     if (this.data[key]) {
       return { value: Buffer.from(JSON.stringify(this.data[key])) }
     }
     return null
   }
 
-  createReadStream() {
+  createReadStream () {
     const entries = Object.entries(this.data).map(([key, value]) => ({
       key,
       value: Buffer.from(JSON.stringify(value))
@@ -39,7 +39,7 @@ class MockHyperbee {
 }
 
 // Helper to create ActionCaller bypassing instanceof checks
-function createActionCaller(net, racks, callTargetsLimit, orkInstance, orkActionsConfig, configsDb, actionConfigResolvers) {
+function createActionCaller (net, racks, callTargetsLimit, orkInstance, orkActionsConfig, configsDb, actionConfigResolvers) {
   const caller = Object.create(ActionCaller.prototype)
   caller._net = net
   caller._racks = racks
@@ -51,6 +51,10 @@ function createActionCaller(net, racks, callTargetsLimit, orkInstance, orkAction
   caller.orkActions = new Set([ACTION_TYPES.REGISTER_CONFIG, ACTION_TYPES.UPDATE_CONFIG, ACTION_TYPES.DELETE_CONFIG])
   caller._callTargetsLimit = callTargetsLimit || 50
   return caller
+}
+
+const enabledOrkConfig = {
+  registerConfig: { enabled: true, reqVotes: 2, requiredPerms: ['pool'], approvalPerms: ['pool'] }
 }
 
 test('ActionCaller constructor', async (t) => {
@@ -157,6 +161,109 @@ test('ActionCaller getWriteCalls', async (t) => {
     } catch (err) {
       t.is(err.message, 'ERR_QUERY_INVALID', 'should throw correct error')
     }
+  })
+
+  t.test('should return ork targets for enabled ORK action', async (t) => {
+    const net = new MockNetFacility()
+    const racks = new MockHyperbee()
+    const caller = createActionCaller(net, racks, 50, null, enabledOrkConfig, null, {})
+    const r = await caller.getWriteCalls({}, ACTION_TYPES.REGISTER_CONFIG, [{ x: 1 }], ['pool:w'])
+    t.ok(r.targets.ork.isOrkAction)
+    t.is(r.targets.ork.reqVotes, 2)
+    t.ok(Array.isArray(r.requiredPerms))
+  })
+
+  t.test('should reject disabled ORK action', async (t) => {
+    const net = new MockNetFacility()
+    const racks = new MockHyperbee()
+    const caller = createActionCaller(net, racks, 50, null, {
+      registerConfig: { enabled: false, requiredPerms: ['pool'] }
+    }, null, {})
+
+    try {
+      await caller.getWriteCalls({}, ACTION_TYPES.REGISTER_CONFIG, [{}], ['pool:w'])
+      t.fail('should throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_ORK_ACTION_NOT_ALLOWED')
+    }
+  })
+
+  t.test('should reject ORK action when permissions insufficient', async (t) => {
+    const net = new MockNetFacility()
+    const racks = new MockHyperbee()
+    const caller = createActionCaller(net, racks, 50, null, enabledOrkConfig, null, {})
+
+    try {
+      await caller.getWriteCalls({}, ACTION_TYPES.REGISTER_CONFIG, [{}], ['miner:r'])
+      t.fail('should throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_PERMISSION_DENIED')
+    }
+  })
+
+  t.test('should collect rack targets from getWriteCalls RPC', async (t) => {
+    const net = new MockNetFacility()
+    net.jRequest = async () => ({ calls: [{ id: 't1', tags: ['x'] }], reqVotes: 3 })
+    const racks = new MockHyperbee({
+      r1: { id: 'r1', type: 'miner-s19', info: { rpcPublicKey: 'ab' } }
+    })
+    const caller = createActionCaller(net, racks, 50, null, {}, null, {})
+    const r = await caller.getWriteCalls({}, 'reboot', [[]], ['miner:w'])
+    t.ok(r.targets.r1)
+    t.is(r.targets.r1.reqVotes, 3)
+    t.is(r.requiredPerms.length, 1)
+  })
+
+  t.test('should record rack error when getWriteCalls RPC fails', async (t) => {
+    const net = new MockNetFacility()
+    net.jRequest = async () => {
+      throw new Error('rpc down')
+    }
+    const racks = new MockHyperbee({
+      r1: { id: 'r1', type: 'miner-s19', info: { rpcPublicKey: 'ab' } }
+    })
+    const caller = createActionCaller(net, racks, 50, null, {}, null, {})
+    const r = await caller.getWriteCalls({}, 'reboot', [[]], ['miner:w'])
+    t.is(r.targets.r1.error, 'rpc down')
+    t.is(r.targets.r1.calls.length, 0)
+  })
+
+  t.test('should only target matching rack for UPDATE_THING', async (t) => {
+    const net = new MockNetFacility()
+    net.jRequest = async (publicKey, method, params, opts) => {
+      net.jRequestCalls.push({ publicKey, method, params, opts })
+      return { calls: [{ id: 't1', tags: [] }], reqVotes: 1 }
+    }
+    const racks = new MockHyperbee({
+      r1: { id: 'r1', type: 'miner-s19', info: { rpcPublicKey: 'a1' } },
+      r2: { id: 'r2', type: 'miner-s19', info: { rpcPublicKey: 'a2' } }
+    })
+    const caller = createActionCaller(net, racks, 50, null, {}, null, {})
+    const r = await caller.getWriteCalls(
+      {},
+      ACTION_TYPES.UPDATE_THING,
+      [{ rackId: 'r1', id: 'thing-1' }],
+      ['miner:w']
+    )
+    t.ok(r.targets.r1)
+    t.absent(r.targets.r2, 'other rack skipped when rackId differs')
+    t.is(net.jRequestCalls.length, 1)
+  })
+
+  t.test('should call all permitted racks for RACK_REBOOT', async (t) => {
+    const net = new MockNetFacility()
+    net.jRequest = async (publicKey, method, params, opts) => {
+      net.jRequestCalls.push({ publicKey, method, params, opts })
+      return { calls: [{ id: 'r1', tags: [] }], reqVotes: 1 }
+    }
+    const racks = new MockHyperbee({
+      r1: { id: 'r1', type: 'miner-s19', info: { rpcPublicKey: 'a1' } },
+      r2: { id: 'r2', type: 'miner-s19', info: { rpcPublicKey: 'a2' } }
+    })
+    const caller = createActionCaller(net, racks, 50, null, {}, null, {})
+    const r = await caller.getWriteCalls({}, ACTION_TYPES.RACK_REBOOT, [[]], ['miner:w'])
+    t.ok(r.targets.r1 && r.targets.r2)
+    t.is(net.jRequestCalls.length, 2)
   })
 })
 
@@ -300,6 +407,98 @@ test('ActionCaller callTargets', async (t) => {
     await caller.callTargets('action', ['param1'], {})
 
     t.is(net.jRequestCalls.length, 0, 'should make no calls')
+  })
+
+  t.test('should invoke ork instance method for ORK-level action', async (t) => {
+    const net = new MockNetFacility()
+    const racks = new MockHyperbee()
+    const ork = {
+      async registerConfig (payload) {
+        return { ok: true, id: payload.id }
+      }
+    }
+    const caller = createActionCaller(net, racks, 50, ork, enabledOrkConfig, null, {})
+    const targets = {
+      ork: {
+        reqVotes: 2,
+        calls: [{ id: 'ork', tags: [] }],
+        isOrkAction: true,
+        approvalPerms: ['pool:w']
+      }
+    }
+
+    await caller.callTargets(ACTION_TYPES.REGISTER_CONFIG, [{ id: 'cfg-1' }], targets)
+
+    t.is(targets.ork.calls[0].result.ok, true)
+    t.is(targets.ork.calls[0].result.id, 'cfg-1')
+  })
+
+  t.test('should record error when ork method throws', async (t) => {
+    const net = new MockNetFacility()
+    const racks = new MockHyperbee()
+    const ork = {
+      async updateConfig () {
+        throw new Error('ork failed')
+      }
+    }
+    const caller = createActionCaller(net, racks, 50, ork, {
+      updateConfig: { enabled: true, requiredPerms: ['pool:w'] }
+    }, null, {})
+    const targets = {
+      ork: {
+        reqVotes: 1,
+        calls: [{ id: 'ork', tags: [] }],
+        isOrkAction: true,
+        approvalPerms: []
+      }
+    }
+
+    await caller.callTargets(ACTION_TYPES.UPDATE_CONFIG, [{}], targets)
+
+    t.is(targets.ork.calls[0].error, 'ork failed')
+  })
+
+  t.test('should throw when ork instance is missing for ORK action', async (t) => {
+    const net = new MockNetFacility()
+    const racks = new MockHyperbee()
+    const caller = createActionCaller(net, racks, 50, null, enabledOrkConfig, null, {})
+    const targets = {
+      ork: {
+        reqVotes: 1,
+        calls: [{ id: 'ork', tags: [] }],
+        isOrkAction: true,
+        approvalPerms: []
+      }
+    }
+
+    try {
+      await caller.callTargets(ACTION_TYPES.REGISTER_CONFIG, [{}], targets)
+      t.fail('expected throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_ORK_INSTANCE_NOT_SET')
+    }
+  })
+
+  t.test('should throw when ork method is missing', async (t) => {
+    const net = new MockNetFacility()
+    const racks = new MockHyperbee()
+    const ork = {}
+    const caller = createActionCaller(net, racks, 50, ork, enabledOrkConfig, null, {})
+    const targets = {
+      ork: {
+        reqVotes: 1,
+        calls: [{ id: 'ork', tags: [] }],
+        isOrkAction: true,
+        approvalPerms: []
+      }
+    }
+
+    try {
+      await caller.callTargets(ACTION_TYPES.REGISTER_CONFIG, [{}], targets)
+      t.fail('expected throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_ORK_METHOD_NOT_FOUND')
+    }
   })
 })
 
