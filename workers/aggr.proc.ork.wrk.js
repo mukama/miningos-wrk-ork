@@ -14,7 +14,8 @@ const {
   RPC_METHODS,
   COMMENT_ACTION,
   INVALID_ACTIONS_ERRORS,
-  DEFAULT_TIMEZONE
+  DEFAULT_TIMEZONE,
+  DISALLOWED_QUERY_OPERATORS
 } = require('./lib/constants')
 const aggrCrossthg = require('./lib/aggr.crossthg')
 const { setTimeout: sleep } = require('timers/promises')
@@ -887,7 +888,7 @@ class WrkProcAggr extends TetherWrkBase {
     }
     for (const key of Object.keys(obj)) {
       if (key.startsWith('$')) {
-        if (key === '$where' || key === '$expr') {
+        if (DISALLOWED_QUERY_OPERATORS.includes(key)) {
           throw new Error('ERR_QUERY_OPERATOR_NOT_ALLOWED')
         }
         if (key === '$regex' && typeof obj[key] === 'string' && obj[key].length > MAX_REGEX_LENGTH) {
