@@ -96,7 +96,8 @@ const RPC_METHODS = [
   { name: 'storeFile', op: 'w' },
   { name: 'loadFile', op: 'r' },
   { name: 'removeFile', op: 'w' },
-  { name: 'listFirmwares', op: 'r' }
+  { name: 'listFirmwares', op: 'r' },
+  { name: 'setAlertParams', op: 'w' }
 ]
 
 const INVALID_ACTIONS_ERRORS = [

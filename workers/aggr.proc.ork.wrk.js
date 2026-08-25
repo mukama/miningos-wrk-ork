@@ -787,6 +787,45 @@ class WrkProcAggr extends TetherWrkBase {
     return await this.dataProxy.requestData('getThingConf', req, { timeout: 10000, type: req.type })
   }
 
+  async setAlertParams (req) {
+    if (!req || typeof req !== 'object') {
+      throw new Error('ERR_ALERT_CONFIGS_INVALID')
+    }
+
+    const byRackType = req.byRackType
+    if (!byRackType) {
+      throw new Error('ERR_BY_RACK_TYPE_MISSING')
+    }
+
+    if (typeof byRackType !== 'object' || Array.isArray(byRackType)) {
+      throw new Error('ERR_BY_RACK_TYPE_INVALID')
+    }
+
+    for (const rackType in byRackType) {
+      const alertParams = byRackType[rackType]
+
+      const rackEntries = await this._getRacksEntries()
+      await async.eachLimit(rackEntries, 25, async (rack) => {
+        if (await this._shouldSkipRackType(rackType, rack.id)) {
+          return
+        }
+
+        try {
+          await this.dataProxy.requestRackData(
+            rack.id,
+            'saveWrkSettings',
+            { entries: { alertParams } },
+            { timeout: 10000 }
+          )
+        } catch (e) {
+          this.debugError(`saveWrkSettings failed for rack: ${rack.id} in setAlertParams`, e, true)
+        }
+      })
+    }
+
+    return 1
+  }
+
   async getAction (req) {
     const { id, type } = req
     const { data } = await this.actionApprover_0.getAction(type, id)
