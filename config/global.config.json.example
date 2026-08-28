@@ -20,5 +20,25 @@
     "medium": 1300000,
     "high": 1400000
   },
-  "isAutoSleepAllowed": false
+  "isAutoSleepAllowed": false,
+  "approvedPoolUrls": [
+    {
+      "id": "pool-1",
+      "name": "Pool 1",
+      "host": "test.pool1.com",
+      "port": 1314
+    },
+    {
+      "id": "pool-2",
+      "name": "Pool 2",
+      "host": "test.pool2.com",
+      "port": 3334
+    },
+    {
+      "id": "pool-2",
+      "name": "Pool 2",
+      "host": "test.pool2.com",
+      "port": 3333
+    }
+  ]
 }
