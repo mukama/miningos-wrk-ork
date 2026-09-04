@@ -2419,3 +2419,149 @@ test('listFirmwares', async (t) => {
     t.is(capturedCalls[0].opts.timeout, 10000, 'should use 10000ms timeout')
   })
 })
+
+test('setAlertParams', async (t) => {
+  t.test('should throw for a non-object request', async (t) => {
+    const worker = await createWorker()
+    worker._start(() => {})
+
+    try {
+      await worker.setAlertParams(null)
+      t.fail('should throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_ALERT_CONFIGS_INVALID', 'should throw correct error')
+    }
+
+    try {
+      await worker.setAlertParams('invalid')
+      t.fail('should throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_ALERT_CONFIGS_INVALID', 'should throw correct error')
+    }
+  })
+
+  t.test('should throw when byRackType is missing', async (t) => {
+    const worker = await createWorker()
+    worker._start(() => {})
+
+    try {
+      await worker.setAlertParams({})
+      t.fail('should throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_BY_RACK_TYPE_MISSING', 'should throw correct error')
+    }
+  })
+
+  t.test('should throw when byRackType is not a plain object', async (t) => {
+    const worker = await createWorker()
+    worker._start(() => {})
+
+    try {
+      await worker.setAlertParams({ byRackType: [] })
+      t.fail('should throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_BY_RACK_TYPE_INVALID', 'should throw correct error')
+    }
+
+    try {
+      await worker.setAlertParams({ byRackType: 'invalid' })
+      t.fail('should throw')
+    } catch (err) {
+      t.is(err.message, 'ERR_BY_RACK_TYPE_INVALID', 'should throw correct error')
+    }
+  })
+
+  t.test('should do nothing when byRackType is empty', async (t) => {
+    const worker = await createWorker()
+    worker._start(() => {})
+
+    const calls = []
+    worker.net_r0.jRequest = async (...args) => {
+      calls.push(args)
+      return 1
+    }
+
+    await worker.registerRack({ id: 'rack-1', type: 'wrk-miner-s19', info: { rpcPublicKey: 'key1' } })
+
+    await worker.setAlertParams({ byRackType: {} })
+
+    t.is(calls.length, 0, 'should not call any rack')
+  })
+
+  t.test('should push alert params only to racks matching the rack type', async (t) => {
+    const worker = await createWorker()
+    worker._start(() => {})
+
+    const calls = []
+    worker.net_r0.jRequest = async (publicKey, method, params, opts) => {
+      calls.push({ publicKey, method, params, opts })
+      return 1
+    }
+
+    await worker.registerRack({ id: 'rack-miner-1', type: 'wrk-miner-s19', info: { rpcPublicKey: 'key1' } })
+    await worker.registerRack({ id: 'rack-psu-1', type: 'wrk-psu', info: { rpcPublicKey: 'key2' } })
+
+    await worker.setAlertParams({
+      byRackType: { 'wrk-miner': { hashrateDropPct: 10 } }
+    })
+
+    t.is(calls.length, 1, 'should only call the matching rack')
+    t.is(calls[0].publicKey, 'key1', 'should target the miner rack')
+    t.is(calls[0].method, 'saveWrkSettings', 'should call saveWrkSettings')
+    t.alike(calls[0].params.entries, { alertParams: { hashrateDropPct: 10 } }, 'should forward alertParams')
+    t.is(calls[0].opts.timeout, 10000, 'should use 10000ms timeout')
+  })
+
+  t.test('should push distinct params to each rack type in the same request', async (t) => {
+    const worker = await createWorker()
+    worker._start(() => {})
+
+    const calls = []
+    worker.net_r0.jRequest = async (publicKey, method, params) => {
+      calls.push({ publicKey, params })
+      return 1
+    }
+
+    await worker.registerRack({ id: 'rack-miner-1', type: 'wrk-miner-s19', info: { rpcPublicKey: 'key1' } })
+    await worker.registerRack({ id: 'rack-dcs-1', type: 'wrk-dcs-siemens', info: { rpcPublicKey: 'key2' } })
+
+    await worker.setAlertParams({
+      byRackType: {
+        'wrk-miner': { hashrateDropPct: 10 },
+        'wrk-dcs': { maxTempC: 40 }
+      }
+    })
+
+    t.is(calls.length, 2, 'should call each matching rack once')
+    const paramsByKey = Object.fromEntries(calls.map(c => [c.publicKey, c.params.entries.alertParams]))
+    t.alike(paramsByKey.key1, { hashrateDropPct: 10 }, 'should forward miner params to the miner rack')
+    t.alike(paramsByKey.key2, { maxTempC: 40 }, 'should forward dcs params to the dcs rack')
+  })
+
+  t.test('should swallow rack errors via debugError and continue with other racks', async (t) => {
+    const worker = await createWorker()
+    worker._start(() => {})
+
+    const calls = []
+    worker.net_r0.jRequest = async (publicKey) => {
+      if (publicKey === 'key1') throw new Error('rpc failed')
+      calls.push(publicKey)
+      return 1
+    }
+
+    let sawAlert
+    worker.debugError = (msg, err, alert) => {
+      sawAlert = { msg, err, alert }
+    }
+
+    await worker.registerRack({ id: 'rack-1', type: 'wrk-miner-s19', info: { rpcPublicKey: 'key1' } })
+    await worker.registerRack({ id: 'rack-2', type: 'wrk-miner-s19', info: { rpcPublicKey: 'key2' } })
+
+    await worker.setAlertParams({ byRackType: { 'wrk-miner': { hashrateDropPct: 10 } } })
+
+    t.ok(String(sawAlert.msg).includes('rack-1'), 'should include the failing rack id in the debug message')
+    t.is(sawAlert.err.message, 'rpc failed', 'should include original error')
+    t.ok(sawAlert.alert, 'should report with alert=true')
+    t.alike(calls, ['key2'], 'should still sync the other rack')
+  })
+})

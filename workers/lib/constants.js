@@ -21,6 +21,7 @@ const ACTION_TYPES = {
   SET_POWER_MODE: 'setPowerMode',
   SET_LED: 'setLED',
   SETUP_POOLS: 'setupPools',
+  DOWNLOAD_LOGS: 'downloadLogs',
 
   // Thing actions
   REGISTER_THING: 'registerThing',
@@ -33,6 +34,11 @@ const ACTION_TYPES = {
   UPDATE_CONFIG: 'updateConfig',
   DELETE_CONFIG: 'deleteConfig'
 }
+
+// Actions that go through the write-call pipeline for transport reasons but do not
+// change anything on the thing — they only read data back off it. Callers need the
+// thing's read level for these, not its write level, so read-only users can use them.
+const READ_ONLY_ACTIONS = [ACTION_TYPES.DOWNLOAD_LOGS]
 
 const MS_24_HOURS = 24 * 60 * 60 * 1000
 const DAILY_5_MIN_INTERVALS = 288
@@ -90,13 +96,21 @@ const RPC_METHODS = [
   { name: 'storeFile', op: 'w' },
   { name: 'loadFile', op: 'r' },
   { name: 'removeFile', op: 'w' },
-  { name: 'listFirmwares', op: 'r' }
+  { name: 'listFirmwares', op: 'r' },
+  { name: 'setAlertParams', op: 'w' }
 ]
 
 const INVALID_ACTIONS_ERRORS = [
   'UNKNOWN_METHOD',
   'CHANNEL_CLOSED'
 ]
+
+const INSTANT_ACTIONS = new Set([
+  ACTION_TYPES.REGISTER_THING,
+  ACTION_TYPES.UPDATE_THING
+])
+
+const INSTANT_ACTION_CALL_TIMEOUT_MS = 10000
 
 const DEFAULT_TIMEZONE = 'UTC'
 
@@ -127,6 +141,7 @@ const DEFAULT_ACTION_CONFIG_RESOLVERS = {
 
 module.exports = {
   ACTION_TYPES,
+  READ_ONLY_ACTIONS,
   MS_24_HOURS,
   DAILY_5_MIN_INTERVALS,
   OPTIONAL_CONFIGS,
@@ -134,6 +149,8 @@ module.exports = {
   COMMENT_ACTION,
   RPC_METHODS,
   INVALID_ACTIONS_ERRORS,
+  INSTANT_ACTIONS,
+  INSTANT_ACTION_CALL_TIMEOUT_MS,
   DEFAULT_TIMEZONE,
   DISALLOWED_QUERY_OPERATORS,
   CONFIG_TYPES,
