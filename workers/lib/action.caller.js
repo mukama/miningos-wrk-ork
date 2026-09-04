@@ -5,8 +5,8 @@ const NetFacility = require('@tetherto/hp-svc-facs-net')
 const Hyperbee = require('hyperbee')
 const mingo = require('mingo')
 const { isPlainObject } = require('@bitfinex/lib-js-util-base')
-const { ACTION_TYPES } = require('./constants')
-const { hasWritePermission } = require('./permissions')
+const { ACTION_TYPES, READ_ONLY_ACTIONS } = require('./constants')
+const { hasReadPermission, hasWritePermission } = require('./permissions')
 
 class ActionCaller {
   /**
@@ -43,6 +43,7 @@ class ActionCaller {
     this._actionConfigResolvers = actionConfigResolvers
     this.rackActions = new Set([ACTION_TYPES.REGISTER_THING, ACTION_TYPES.UPDATE_THING, ACTION_TYPES.FORGET_THINGS, ACTION_TYPES.RACK_REBOOT])
     this.orkActions = new Set([ACTION_TYPES.REGISTER_CONFIG, ACTION_TYPES.UPDATE_CONFIG, ACTION_TYPES.DELETE_CONFIG])
+    this.readOnlyActions = new Set(READ_ONLY_ACTIONS)
     this._callTargetsLimit = callTargetsLimit
   }
 
@@ -131,8 +132,10 @@ class ActionCaller {
    * @param {string} id
    * @param {string} method
    * @param {any[]} params
+   * @param {Object} [opts]
+   * @param {number} [opts.timeout]
    */
-  async _callThing (rack, id, method, params) {
+  async _callThing (rack, id, method, params, opts = {}) {
     const raw = await this._racks.get(rack)
     const entry = JSON.parse(raw.value.toString())
 
@@ -160,7 +163,8 @@ class ActionCaller {
       return this._net.jRequest(
         entry.info.rpcPublicKey,
         method,
-        formattedParams
+        formattedParams,
+        opts
       )
     }
 
@@ -173,7 +177,8 @@ class ActionCaller {
     return this._net.jRequest(
       entry.info.rpcPublicKey,
       'queryThing',
-      { id, method, params: resolvedParams }
+      { id, method, params: resolvedParams },
+      opts
     )
   }
 
@@ -243,12 +248,17 @@ class ActionCaller {
     const stream = this._racks.createReadStream()
     const limit = 5
     const requiredPerms = new Set()
+    // Read-only actions only stream data back off the thing, so the caller needs its
+    // read level; everything else is a mutation and needs write.
+    const hasActionPermission = this.readOnlyActions.has(action)
+      ? hasReadPermission
+      : hasWritePermission
 
     await async.eachLimit(stream, limit, async (raw) => {
       const entry = JSON.parse(raw.value.toString())
       const baseType = entry.type.split('-')[0]
 
-      if (!hasWritePermission(permissions, baseType)) {
+      if (!hasActionPermission(permissions, baseType)) {
         return
       }
 
@@ -308,8 +318,10 @@ class ActionCaller {
    * @param {string} action
    * @param {any[]} params
    * @param {Object<string, { calls: Array<{id: string, tags: string[]}>, error?: string, isOrkAction?: boolean }>} targets
+   * @param {Object} [opts]
+   * @param {number} [opts.timeout]
    */
-  async callTargets (action, params, targets) {
+  async callTargets (action, params, targets, opts = {}) {
     if (this.orkActions.has(action) && targets.ork?.isOrkAction) {
       if (!this._orkInstance) {
         throw new Error('ERR_ORK_INSTANCE_NOT_SET')
@@ -335,7 +347,7 @@ class ActionCaller {
 
     await async.eachLimit(calls, this._callTargetsLimit, async ([rack, call]) => {
       try {
-        const result = await this._callThing(rack, call.id, action, params)
+        const result = await this._callThing(rack, call.id, action, params, opts)
         call.result = result
       } catch (err) {
         call.error = err.message
